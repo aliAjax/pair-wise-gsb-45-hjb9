@@ -1,95 +1,125 @@
-"""港口泊位与航道调度领域规则与状态转换。"""
-from typing import Any, Dict, Iterable, Tuple
+"""冷藏箱供电台账领域规则：输入校验、容量与温控核对、排队与批次判定。
 
-from .domain import Actor, Conflict, ValidationError, boolean, choice, integer, number, text, text_list
+本模块只做纯计算与校验，不接触数据库。
+"""
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from .domain import ValidationError, number, optional_text, text
 
 
-INITIAL_STATE = "draft"
-CREATE_ROLES = {'port_controller'}
-ACTION_ROLES = {'confirm': {'port_controller'}, 'berth': {'port_controller'}, 'depart': {'port_controller'}, 'cancel': {'port_controller'}}
-TRANSITIONS = {'confirm': {'draft': 'confirmed'}, 'berth': {'confirmed': 'berthed'}, 'depart': {'berthed': 'departed'}, 'cancel': {'draft': 'cancelled', 'confirmed': 'cancelled'}}
+# 冷藏箱状态
+REEFER_REGISTERED = "registered"
+REEFER_LOADED = "loaded"
+
+# 供电回路状态
+CIRCUIT_NORMAL = "normal"
+CIRCUIT_MAINTENANCE = "maintenance"
+CIRCUIT_TRIPPED = "tripped"
+CIRCUIT_STATES = (CIRCUIT_NORMAL, CIRCUIT_MAINTENANCE, CIRCUIT_TRIPPED)
+
+# 接电安排状态（每个冷藏箱最多一条活跃安排）
+ASSN_QUEUED = "queued"            # 排队等回路（容量缺口）
+ASSN_CONNECTED = "connected"      # 已接电
+ASSN_PENDING_SUPPLY = "pending_supply"  # 接电失败后缺回路，待补
+ASSN_INVALID = "invalid"          # 船期或回路状态变化后失效（保留为依据）
+ASSN_SUPERSEDED = "superseded"    # 被后来的安排取代（恢复/重排）
+
+ACTIVE_ASSIGNMENT_STATES = (ASSN_QUEUED, ASSN_CONNECTED, ASSN_PENDING_SUPPLY)
+TERMINAL_ASSIGNMENT_STATES = (ASSN_INVALID, ASSN_SUPERSEDED)
+
+# 跳闸记录状态
+TRIP_OPEN = "open"
+TRIP_RECOVERED = "recovered"
+
+# 批次状态
+BATCH_OPEN = "open"
+BATCH_COMPLETE = "complete"
+
+# 角色
+ROLE_PLANNER = "yard_planner"      # 堆场调度：建档、船期、放行
+ROLE_ELECTRICIAN = "electrician"   # 电气员：接电、跳闸、恢复
+KNOWN_ROLES = (ROLE_PLANNER, ROLE_ELECTRICIAN, "admin")
 
 
 class DomainRules:
-    INITIAL_STATE = INITIAL_STATE
+    # 温度容差（摄氏度）：设定温度与箱内实测温差超过该值，温控核对不通过
+    TEMP_TOLERANCE_C = 3.0
 
     def known_role(self, role: str) -> bool:
-        all_roles = set(CREATE_ROLES)
-        for roles in ACTION_ROLES.values():
-            all_roles.update(roles)
-        return role == "admin" or role in all_roles
+        return role in KNOWN_ROLES
 
-    def role_can_create(self, role: str) -> bool:
-        return role == "admin" or role in CREATE_ROLES
+    # ---------- 建档校验 ----------
+    def validate_reefer(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "reefer_code": text(payload, "reefer_code"),
+            "voyage_no": optional_text(payload, "voyage_no"),
+            "required_kw": number(payload, "required_kw", 0.1),
+            "set_temp_c": number(payload, "set_temp_c", -60, 40),
+        }
 
-    def role_can_action(self, role: str, action: str) -> bool:
-        return role == "admin" or role in ACTION_ROLES.get(action, set())
+    def validate_circuit(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        data = {
+            "circuit_code": text(payload, "circuit_code"),
+            "capacity_kw": number(payload, "capacity_kw", 0.1),
+            "location": optional_text(payload, "location"),
+        }
+        state = payload.get("state", CIRCUIT_NORMAL)
+        if state not in CIRCUIT_STATES:
+            raise ValidationError("state只能是%s" % "/".join(CIRCUIT_STATES))
+        data["state"] = state
+        return data
 
-    def validate_create(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        p = dict(payload)
-        vessel = text(p, "vessel")
-        berth = text(p, "berth")
-        vessel_length = number(p, "vessel_length_m", 1)
-        berth_length = number(p, "berth_length_m", 1)
-        draft = number(p, "draft_m", 0)
-        berth_depth = number(p, "berth_depth_m", 0)
-        eta = integer(p, "eta_hour", 0, 23)
-        etd = integer(p, "etd_hour", 1, 24)
-        choice(p, "risk_level", ["low", "medium", "high"])
-        dangerous = boolean(p, "dangerous_goods")
-        if etd <= eta:
-            raise ValidationError("etd_hour必须晚于eta_hour")
-        if berth_length < vessel_length:
-            raise ValidationError("泊位长度不足")
-        if berth_depth - draft < 0.5:
-            raise ValidationError("剩余水深不足")
-        if dangerous:
-            text(p, "dangerous_class")
-        return p
+    def validate_voyage(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        etd = text(payload, "etd")
+        try:
+            datetime.fromisoformat(etd.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValidationError("etd必须是ISO-8601时间，例如2026-10-08T18:00:00+08:00") from exc
+        return {
+            "voyage_no": text(payload, "voyage_no"),
+            "vessel": text(payload, "vessel"),
+            "etd": etd,
+        }
 
-    def prepare_create(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        p = self.validate_create(payload)
-        p["safety_margin_m"] = round(float(p["berth_depth_m"]) - float(p["draft_m"]), 2)
-        p["window_hours"] = int(p["etd_hour"]) - int(p["eta_hour"])
-        p["quay_ok"] = bool(p["berth_length_m"] >= p["vessel_length_m"] and p["safety_margin_m"] >= 0.5)
-        return p
+    # ---------- 接电前核对 ----------
+    def temp_check(self, set_temp_c: float, actual_temp_c: float) -> Dict[str, Any]:
+        delta = round(abs(float(actual_temp_c) - float(set_temp_c)), 2)
+        ok = delta <= self.TEMP_TOLERANCE_C
+        return {
+            "temp_ok": ok,
+            "set_temp_c": float(set_temp_c),
+            "actual_temp_c": float(actual_temp_c),
+            "temp_delta_c": delta,
+        }
 
-    def check_create_conflicts(self, payload: Dict[str, Any], existing: Iterable[Dict[str, Any]]) -> None:
-        for item in existing:
-            other = item["payload"]
-            if item["state"] in {"cancelled", "departed"} or other.get("berth") != payload.get("berth"):
-                continue
-            if int(payload["eta_hour"]) < int(other.get("etd_hour", 0)) and int(payload["etd_hour"]) > int(other.get("eta_hour", 24)):
-                raise Conflict("同一泊位时间窗冲突")
+    def check_before_connect(self, reefer: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any]:
+        """接电前核对：必带实测温度，温控不符直接拒绝；容量核对在选回路阶段做。"""
+        actual = number(data, "actual_temp_c", -60, 40)
+        temp = self.temp_check(reefer["set_temp_c"], actual)
+        if not temp["temp_ok"]:
+            raise ValidationError(
+                "温控核对不通过：实测温度与设定温度相差%s°C，超过容差%s°C"
+                % (temp["temp_delta_c"], self.TEMP_TOLERANCE_C)
+            )
+        return temp
 
-    def require_transition(self, record: Dict[str, Any], action: str) -> str:
-        allowed = TRANSITIONS.get(action, {}).get(record["state"])
-        if allowed is None:
-            raise Conflict("当前状态不允许执行%s" % action)
-        return allowed
+    @staticmethod
+    def circuit_available_kw(circuit: Dict[str, Any], used_kw: float) -> float:
+        if circuit["state"] != CIRCUIT_NORMAL:
+            return 0.0
+        return round(float(circuit["capacity_kw"]) - float(used_kw), 2)
 
-    def apply_action(self, record: Dict[str, Any], action: str, data: Dict[str, Any]) -> Tuple[str, Dict[str, Any], str]:
-        new_state = self.require_transition(record, action)
-        data = dict(data or {})
-        p = dict(record["payload"])
-        changes: Dict[str, Any] = {}
-        summary = ""
-        if action == "confirm":
-            pilot = text(data, "pilot_id")
-            changes["pilot_id"] = pilot
-            summary = "已确认引航员"
-        elif action == "berth":
-            actual = number(data, "actual_draft_m", 0)
-            if float(p["berth_depth_m"]) - actual < 0.5:
-                raise ValidationError("实际吃水导致水深不足")
-            changes["actual_draft_m"] = actual
-            summary = "船舶已靠泊"
-        elif action == "depart":
-            if not boolean(data, "cargo_operation_complete"):
-                raise ValidationError("货物作业尚未完成")
-            summary = "船舶已离泊"
-        elif action == "cancel":
-            changes["cancel_reason"] = text(data, "cancel_reason")
-            summary = "计划已取消"
-        p.update(changes)
-        return new_state, p, summary or ("已执行%s" % action)
+    @staticmethod
+    def pick_circuit(circuits: List[Dict[str, Any]], required_kw: float) -> Optional[Dict[str, Any]]:
+        """从带 remaining_kw 的回路里选：正常、剩余容量够用，按剩余容量最小优先（紧凑装箱）。"""
+        candidates = [c for c in circuits if c.get("remaining_kw", 0) >= float(required_kw)]
+        if not candidates:
+            return None
+        return sorted(candidates, key=lambda c: (c["remaining_kw"], c["circuit_code"]))[0]
+
+    @staticmethod
+    def capacity_gap(circuits: List[Dict[str, Any]], required_kw: float) -> float:
+        """容量不够时的缺口：需求与最大可用剩余容量之差。"""
+        best = max((c.get("remaining_kw", 0) for c in circuits), default=0.0)
+        return round(max(0.0, float(required_kw) - best), 2)

@@ -1,33 +1,450 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>港口泊位与航道调度</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #17212b; }
-    main { max-width: 960px; margin: auto; }
-    button { padding: .55rem .9rem; cursor: pointer; }
-    pre { background: #f4f6f8; padding: 1rem; overflow: auto; border-radius: 8px; }
-    .row { display: flex; gap: 1rem; align-items: center; }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>冷藏箱供电回路台账</title>
+<style>
+  :root { --line:#d9e0e6; --bg:#f4f6f8; --blue:#1f5fa8; --red:#c0392b; --amber:#b9770e; --green:#1e7e45; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+         margin: 0; color: #17212b; background: var(--bg); }
+  header { background: #10243a; color: #fff; padding: .8rem 1.2rem; display:flex; gap:1rem; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size: 1.05rem; margin: 0; flex: 1; }
+  header select, header input { padding:.35rem .5rem; border-radius:6px; border:1px solid #33506e; background:#0c1d30; color:#fff; }
+  main { max-width: 1280px; margin: 1rem auto; padding: 0 1rem 3rem; }
+  nav { display:flex; gap:.4rem; flex-wrap:wrap; margin-bottom:1rem; }
+  nav button { padding:.5rem .9rem; border:1px solid var(--line); background:#fff; border-radius:8px; cursor:pointer; }
+  nav button.active { background: var(--blue); color:#fff; border-color:var(--blue); }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(280px,1fr)); gap:1rem; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:1rem; }
+  .card h2 { font-size:.95rem; margin:0 0 .7rem; }
+  table { width:100%; border-collapse:collapse; font-size:.82rem; background:#fff; }
+  th, td { border-bottom:1px solid var(--line); padding:.4rem .5rem; text-align:left; vertical-align:top; }
+  th { background:#eef2f6; position:sticky; top:0; }
+  .table-wrap { background:#fff; border:1px solid var(--line); border-radius:10px; overflow:auto; max-height: 460px; }
+  form { display:grid; grid-template-columns: 1fr 1fr; gap:.5rem; }
+  form label { font-size:.75rem; color:#566; display:flex; flex-direction:column; gap:.2rem; }
+  form input, form select, form textarea { padding:.4rem .5rem; border:1px solid #b8c2cc; border-radius:6px; font-size:.85rem; }
+  form .full { grid-column: 1 / -1; }
+  button.primary { background:var(--blue); color:#fff; border:none; border-radius:7px; padding:.5rem .9rem; cursor:pointer; }
+  button.warn { background:var(--red); color:#fff; border:none; border-radius:7px; padding:.4rem .7rem; cursor:pointer; }
+  button.small { padding:.25rem .55rem; font-size:.75rem; border-radius:6px; border:1px solid #b8c2cc; background:#fff; cursor:pointer; }
+  .pill { display:inline-block; padding:.1rem .5rem; border-radius:99px; font-size:.72rem; }
+  .pill.connected, .pill.loaded, .pill.normal, .pill.complete, .pill.recovered { background:#e3f4ea; color:var(--green); }
+  .pill.queued, .pill.maintenance, .pill.open { background:#fdf3e0; color:var(--amber); }
+  .pill.tripped, .pill.invalid, .pill.conflict_candidate { background:#fbe4e1; color:var(--red); }
+  .pill.pending_supply, .pill.superseded { background:#ece6f7; color:#5d3a9b; }
+  #toast { position:fixed; right:1rem; bottom:1rem; max-width:420px; display:flex; flex-direction:column; gap:.5rem; z-index:9; }
+  .toast { padding:.6rem .9rem; border-radius:8px; color:#fff; font-size:.85rem; box-shadow:0 4px 14px rgba(0,0,0,.2); white-space:pre-wrap; }
+  .toast.ok { background:var(--green); } .toast.err { background:var(--red); } .toast.info { background:var(--blue); }
+  .muted { color:#778; font-size:.75rem; }
+  .basis { font-family: ui-monospace, Menlo, monospace; font-size:.7rem; color:#445; word-break:break-all; }
+  .sources { margin-top:.2rem; }
+  .src { display:inline-block; margin:.1rem .2rem .1rem 0; padding:.05rem .4rem; border:1px dashed #9ab; border-radius:6px;
+         font-size:.68rem; color:#345; cursor:pointer; background:#fafcfe; }
+  .src:hover { background:#eaf2fb; }
+  .stats { display:flex; gap:.6rem; flex-wrap:wrap; margin-bottom:1rem; }
+  .stat { background:#fff; border:1px solid var(--line); border-radius:10px; padding:.55rem .8rem; font-size:.8rem; }
+  .stat b { font-size:1.1rem; display:block; }
+  dialog { border:none; border-radius:12px; max-width:720px; width:92%; padding:1.2rem; }
+  dialog::backdrop { background: rgba(16,36,58,.5); }
+</style>
 </head>
 <body>
+<header>
+  <h1>冷藏箱供电回路台账</h1>
+  <label class="muted" style="color:#cfe">操作员
+    <input id="user" value="zhang.san" size="10"></label>
+  <label class="muted" style="color:#cfe">角色
+    <select id="role">
+      <option value="yard_planner">堆场调度 yard_planner</option>
+      <option value="electrician">电气员 electrician</option>
+      <option value="admin">管理员 admin</option>
+    </select></label>
+  <button class="small" style="background:#fff" onclick="loadAll()">刷新</button>
+</header>
 <main>
-  <h1>港口泊位与航道调度</h1>
-  <p>最小演示页。完整业务流程通过README中的JSON接口调用。</p>
-  <div class="row"><button id="load">加载记录</button><button id="stats">查看状态统计</button></div>
-  <pre id="output">点击上方按钮读取服务状态。</pre>
+  <div class="stats" id="stats"></div>
+  <nav id="tabs">
+    <button data-tab="board" class="active">总览台账</button>
+    <button data-tab="registry">建档</button>
+    <button data-tab="connect">接电申请</button>
+    <button data-tab="release">装船放行</button>
+    <button data-tab="trip">跳闸/恢复</button>
+    <button data-tab="candidate">冲突候选</button>
+    <button data-tab="audit">审计溯源</button>
+  </nav>
+
+  <section id="tab-board">
+    <div class="grid">
+      <div class="card"><h2>供电回路（含实时负荷）</h2><div class="table-wrap" id="circuitsTable"></div></div>
+      <div class="card"><h2>冷藏箱</h2><div class="table-wrap" id="reefersTable"></div></div>
+    </div>
+    <div class="card" style="margin-top:1rem"><h2>接电安排（失效/已装船保留依据，可逐级溯源）</h2>
+      <div class="table-wrap" id="assignmentsTable"></div></div>
+    <div class="grid" style="margin-top:1rem">
+      <div class="card"><h2>船期</h2><div class="table-wrap" id="voyagesTable"></div></div>
+      <div class="card"><h2>接电批次</h2><div class="table-wrap" id="batchesTable"></div></div>
+      <div class="card"><h2>跳闸记录</h2><div class="table-wrap" id="tripsTable"></div></div>
+    </div>
+  </section>
+
+  <section id="tab-registry" hidden>
+    <div class="grid">
+      <div class="card"><h2>登记冷藏箱</h2>
+        <form id="f-reefer">
+          <label>箱号<input name="reefer_code" required placeholder="RF-001"></label>
+          <label>航次(可空)<input name="voyage_no" placeholder="V-101"></label>
+          <label>需求功率 kW<input name="required_kw" type="number" step="0.1" value="6"></label>
+          <label>设定温度 °C<input name="set_temp_c" type="number" step="0.1" value="-18"></label>
+          <button class="primary full">登记</button>
+        </form></div>
+      <div class="card"><h2>登记供电回路</h2>
+        <form id="f-circuit">
+          <label>回路号<input name="circuit_code" required placeholder="C-A"></label>
+          <label>容量 kW<input name="capacity_kw" type="number" step="0.1" value="15"></label>
+          <label>位置<input name="location" placeholder="堆场A区"></label>
+          <label>初始状态<select name="state"><option value="normal">normal</option><option value="maintenance">maintenance</option></select></label>
+          <button class="primary full">登记</button>
+        </form></div>
+      <div class="card"><h2>建船期</h2>
+        <form id="f-voyage">
+          <label>航次<input name="voyage_no" required placeholder="V-101"></label>
+          <label>船名<input name="vessel" required placeholder="MV DONGHAI"></label>
+          <label>预计离港 ETD (ISO)<input name="etd" required placeholder="2026-10-08T18:00:00+08:00"></label>
+          <button class="primary full">建船期</button>
+        </form></div>
+      <div class="card"><h2>接电批次</h2>
+        <form id="f-batch">
+          <label>批次号<input name="batch_no" required placeholder="B-2026-0401-1"></label>
+          <label>备注<input name="note"></label>
+          <button class="primary full">开批次</button>
+        </form>
+        <p class="muted">批次内箱全部接电后才能封存为“完整批次”，跳闸恢复以最近完整批次为依据。</p>
+        <form id="f-batch-done"><label class="full">封存完整批次
+          <select name="batch_no" data-fill="openBatches"></select></label>
+          <button class="primary full">封存</button></form>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-connect" hidden>
+    <div class="card"><h2>提交接电申请（两人同时提交只认先到；后来者留冲突候选）</h2>
+      <form id="f-connect" class="grid" style="display:grid">
+        <label>冷藏箱<select name="reefer_code" data-fill="reefersRegistered"></select></label>
+        <label>申请单 request_id（去重键）<input name="request_id" required></label>
+        <label>箱内实测温度 °C<input name="actual_temp_c" type="number" step="0.1" value="-18"></label>
+        <label>指定回路(可空)<select name="preferred_circuit"><option value="">自动选择</option></select></label>
+        <label>归入批次(可空)<select name="batch_no"><option value="">AUTO 自动批次</option></select></label>
+        <button class="primary">提交接电</button>
+        <div class="muted full">接电前核对：温控不符直接拒绝；容量不够则排队并写缺口。容量一旦释放，排队箱自动按先到先得补电。</div>
+      </form></div>
+  </section>
+
+  <section id="tab-release" hidden>
+    <div class="card"><h2>装船放行（已装船保留原依据，释放岸电容量）</h2>
+      <form id="f-release">
+        <label>航次<select name="voyage_no" data-fill="voyages"></select></label>
+        <label class="full">放行箱号（逗号分隔，必须已接电）<input name="codes" placeholder="RF-001,RF-002"></label>
+        <button class="primary full">放行装船</button>
+      </form>
+      <hr>
+      <h2>船期变更（未装船安排立即失效重排）</h2>
+      <form id="f-reschedule">
+        <label>航次<select name="voyage_no" data-fill="voyages"></select></label>
+        <label>新 ETD<input name="etd" required placeholder="2026-10-09T06:00:00+08:00"></label>
+        <button class="primary full">变更船期</button>
+      </form></div>
+  </section>
+
+  <section id="tab-trip" hidden>
+    <div class="grid">
+      <div class="card"><h2>登记跳闸</h2>
+        <form id="f-trip">
+          <label>回路<select name="circuit_code" data-fill="circuitsAll"></select></label>
+          <label class="full">说明<input name="note" placeholder="馈线开关跳闸"></label>
+          <button class="warn full">记录跳闸并失电重排</button>
+        </form></div>
+      <div class="card"><h2>跳闸恢复（从最近完整批次恢复，缺回路按待补）</h2>
+        <form id="f-recover">
+          <label>跳闸单<select name="trip_id" data-fill="openTrips"></select></label>
+          <label>指定批次(可空=最近完整批次)<select name="batch_no"><option value="">自动选择</option></select></label>
+          <button class="primary full">恢复</button>
+        </form></div>
+      <div class="card"><h2>回路状态切换</h2>
+        <form id="f-cstate">
+          <label>回路<select name="circuit_code" data-fill="circuitsAll"></select></label>
+          <label>新状态<select name="state"><option value="maintenance">maintenance 检修</option><option value="normal">normal 恢复</option></select></label>
+          <label class="full">说明<input name="note"></label>
+          <button class="primary full">切换</button>
+        </form><p class="muted">检修会让未装船接电箱立即失效重排；跳闸回路必须先走跳闸恢复。</p></div>
+    </div>
+  </section>
+
+  <section id="tab-candidate" hidden>
+    <div class="card"><h2>接电申请裁决记录（先到者获胜，后来者为冲突候选）</h2>
+      <div class="table-wrap" id="candidatesTable"></div></div>
+  </section>
+
+  <section id="tab-audit" hidden>
+    <div class="card"><h2>全局审计时间线（点击来源标签可跳到依据）</h2>
+      <div style="display:flex;gap:.5rem;margin-bottom:.5rem;flex-wrap:wrap">
+        <select id="auditEntity">
+          <option value="">全部</option><option value="assignment">接电安排</option>
+          <option value="circuit">回路</option><option value="trip">跳闸</option>
+          <option value="voyage">船期</option><option value="batch">批次</option>
+          <option value="reefer">冷藏箱</option>
+        </select>
+        <input id="auditId" type="number" placeholder="实体ID（可空）" style="width:160px">
+        <button class="small" onclick="renderAudit()">查询</button>
+      </div>
+      <div class="table-wrap" id="auditTable" style="max-height:620px"></div></div>
+  </section>
 </main>
+<div id="toast"></div>
+<dialog id="dlg"><div id="dlgBody"></div><div style="text-align:right;margin-top:.8rem"><button class="small" onclick="dlg.close()">关闭</button></div></dialog>
+
 <script>
-const headers = {"X-User-Id":"demo-admin","X-Role":"admin","X-Org":"demo"};
-async function show(path) {
-  const response = await fetch(path, {headers});
-  const data = await response.json();
-  document.getElementById("output").textContent = JSON.stringify(data, null, 2);
+const $ = s => document.querySelector(s);
+const dlg = $("#dlg");
+let STATE = { reefers:[], circuits:[], voyages:[], batches:[], trips:[], assignments:[], requests:[] };
+
+function headers() {
+  return {"X-User-Id": $("#user").value || "anonymous", "X-Role": $("#role").value, "Content-Type":"application/json"};
 }
-document.getElementById("load").onclick = () => show("/api/records?limit=20");
-document.getElementById("stats").onclick = () => show("/api/stats");
+function toast(msg, kind="ok") {
+  const el = document.createElement("div");
+  el.className = "toast " + kind; el.textContent = msg;
+  $("#toast").appendChild(el);
+  setTimeout(() => el.remove(), 6000);
+}
+async function api(method, path, body) {
+  const res = await fetch(path, {method, headers: headers(), body: body ? JSON.stringify(body) : undefined});
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error((data && data.message) || ("HTTP " + res.status));
+    err.payload = data; throw err;
+  }
+  return data;
+}
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const pill = s => `<span class="pill ${esc(s)}">${esc(s)}</span>`;
+function jsonView(o){ return `<div class="basis">${esc(JSON.stringify(o))}</div>`; }
+
+async function loadAll() {
+  try {
+    const [r,c,v,b,t,a,q,s] = await Promise.all([
+      fetch("/api/reefers",{headers:headers()}).then(x=>x.json()),
+      fetch("/api/circuits",{headers:headers()}).then(x=>x.json()),
+      fetch("/api/voyages",{headers:headers()}).then(x=>x.json()),
+      fetch("/api/batches",{headers:headers()}).then(x=>x.json()),
+      fetch("/api/trips",{headers:headers()}).then(x=>x.json()),
+      fetch("/api/assignments?limit=300",{headers:headers()}).then(x=>x.json()),
+      fetch("/api/candidates",{headers:headers()}).then(x=>x.json()),
+      fetch("/api/stats",{headers:headers()}).then(x=>x.json()),
+    ]);
+    STATE = {reefers:r.items, circuits:c.items, voyages:v.items, batches:b.items,
+             trips:t.items, assignments:a.items, requests:q.items};
+    renderAll(s);
+  } catch (e) { toast("加载失败：" + e.message, "err"); }
+}
+
+function renderAll(stats) {
+  const statDefs = [["冷藏箱",stats.reefers],["已装船",stats.reefers_loaded],["已接电",stats.assignments_connected],
+    ["排队",stats.assignments_queued],["待补",stats.assignments_pending_supply],["跳闸回路",stats.circuits_tripped],
+    ["未恢复跳闸",stats.open_trips],["冲突候选",stats.conflict_candidates],["完整批次",stats.batches_complete]];
+  $("#stats").innerHTML = statDefs.map(([k,v])=>`<div class="stat"><b>${v}</b>${k}</div>`).join("");
+
+  $("#circuitsTable").innerHTML = table(
+    ["回路","位置","容量kW","已用kW","剩余kW","状态","操作"],
+    STATE.circuits.map(c=>[esc(c.circuit_code),esc(c.location||""),c.capacity_kw,c.used_kw,
+      c.remaining_kw, pill(c.state),
+      c.state==="normal"
+        ? `<button class="small" onclick="quickState('${esc(c.circuit_code)}','maintenance')">设检修</button>`
+        : c.state==="maintenance"
+          ? `<button class="small" onclick="quickState('${esc(c.circuit_code)}','normal')">恢复正常</button>`
+          : `<span class="muted">待跳闸恢复</span>`]));
+
+  $("#reefersTable").innerHTML = table(
+    ["箱号","航次","需求kW","设定°C","状态"],
+    STATE.reefers.map(r=>[`<button class="small" onclick="showEntityAudit('reefer',${r.id})">${esc(r.reefer_code)}</button>`,
+      esc(r.voyage_no||"-"), r.required_kw, r.set_temp_c, pill(r.state)]));
+
+  $("#assignmentsTable").innerHTML = table(
+    ["#","箱号","状态","回路","需求kW","缺口","依据 basis","来源","时间"],
+    STATE.assignments.map(a=>[a.id, esc(a.reefer_code), pill(a.state), esc(a.circuit_code||"-"),
+      a.required_kw, a.gap_kw ?? "-", jsonView(a.basis), sourcesHtml(a.id, a.basis),
+      `<span class="muted">${esc((a.created_at||"").replace("T"," ").slice(0,19))}</span>`]));
+
+  $("#voyagesTable").innerHTML = table(["航次","船名","ETD"],
+    STATE.voyages.map(v=>[esc(v.voyage_no),esc(v.vessel),esc(v.etd)]));
+  $("#batchesTable").innerHTML = table(["批次","状态","备注","封存时间"],
+    STATE.batches.map(b=>[esc(b.batch_no),pill(b.state),esc(b.note||""),esc(b.completed_at||"-")]));
+  $("#tripsTable").innerHTML = table(["#","回路","跳闸时间","恢复时间","状态","恢复批次","操作"],
+    STATE.trips.map(t=>[t.id,esc(t.circuit_code),esc(t.tripped_at),esc(t.recovered_at||"-"),pill(t.state),
+      esc(t.recovered_batch_id ?? "-"),
+      t.state==="open"?`<button class="small" onclick="quickRecover(${t.id})">按最近完整批次恢复</button>`:"-"]));
+
+  $("#candidatesTable").innerHTML = table(
+    ["#","时间","箱号","申请单","操作人","裁决","获胜安排#","冲突安排#","数据"],
+    STATE.requests.map(q=>[q.id, esc(q.created_at), esc(q.reefer_code), esc(q.request_key), esc(q.actor_id),
+      pill(q.outcome), q.winner_assignment_id ?? "-", q.conflict_assignment_id ?? "-", jsonView(q.data)]));
+
+  fillSelects();
+  if ($("#tab-audit").hidden === false) renderAudit();
+}
+
+function table(headers, rows) {
+  if (!rows.length) return `<p class="muted" style="padding:.6rem">暂无数据</p>`;
+  return `<table><thead><tr>${headers.map(h=>`<th>${h}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+}
+function sourcesHtml(id, basis) {
+  const links = [];
+  if (basis && basis.parent_assignment_id)
+    links.push(srcLink("assignment", basis.parent_assignment_id, "上一版安排#"+basis.parent_assignment_id));
+  if (basis && basis.recovered_from_trip)
+    links.push(srcLink("trip", basis.recovered_from_trip, "跳闸#"+basis.recovered_from_trip));
+  if (basis && basis.recovered_from_batch)
+    links.push(`<span class="src" title="批次依据">批次 ${esc(basis.recovered_from_batch)}</span>`);
+  links.push(srcLink("assignment", id, "本安排审计"));
+  return `<div class="sources">${links.join("")}</div>`;
+}
+function srcLink(type, id, label){ return `<span class="src" onclick="showEntityAudit('${type}',${id})">${esc(label)}</span>`; }
+async function showEntityAudit(type, id){
+  $("#tabs").querySelectorAll("button").forEach(b=>b.classList.toggle("active", b.dataset.tab==="audit"));
+  document.querySelectorAll("main > section").forEach(s=>s.hidden = s.id!=="tab-audit");
+  $("#auditEntity").value = type; $("#auditId").value = id;
+  await renderAudit();
+}
+
+function fillSelects() {
+  const set = (sel, opts) => {
+    if (document.activeElement === sel) return;
+    const cur = sel.value;
+    sel.innerHTML = opts.map(o=>`<option value="${esc(o.v)}">${esc(o.t)}</option>`).join("");
+    if ([...sel.options].some(o=>o.value===cur)) sel.value=cur;
+  };
+  document.querySelectorAll("select[data-fill='reefersRegistered']").forEach(sel=>
+    set(sel, STATE.reefers.filter(r=>r.state==="registered").map(r=>({v:r.reefer_code,t:r.reefer_code}))));
+  document.querySelectorAll("select[data-fill='circuitsAll']").forEach(sel=>
+    set(sel, STATE.circuits.map(c=>({v:c.circuit_code,t:`${c.circuit_code} (${c.state}, 剩${c.remaining_kw}kW)`}))));
+  document.querySelectorAll("select[data-fill='voyages']").forEach(sel=>
+    set(sel, STATE.voyages.map(v=>({v:v.voyage_no,t:`${v.voyage_no} / ${v.vessel}`}))));
+  document.querySelectorAll("select[data-fill='openBatches']").forEach(sel=>
+    set(sel, STATE.batches.filter(b=>b.state==="open").map(b=>({v:b.batch_no,t:b.batch_no}))));
+  document.querySelectorAll("select[data-fill='openTrips']").forEach(sel=>
+    set(sel, STATE.trips.filter(t=>t.state==="open").map(t=>({v:t.id,t:`#${t.id} ${t.circuit_code} @ ${t.tripped_at}`}))));
+  // 接电表单专用选项
+  const pc = document.querySelector("#f-connect select[name='preferred_circuit']");
+  if (pc) set(pc, [{v:"",t:"自动选择"}].concat(
+    STATE.circuits.map(c=>({v:c.circuit_code,t:`${c.circuit_code} 剩${c.remaining_kw}kW ${c.state}`}))));
+  const bn = document.querySelector("#f-connect select[name='batch_no']");
+  if (bn) set(bn, [{v:"",t:"AUTO 自动批次"}].concat(
+    STATE.batches.filter(b=>b.state==="open").map(b=>({v:b.batch_no,t:b.batch_no}))));
+  const rbn = document.querySelector("#f-recover select[name='batch_no']");
+  if (rbn) set(rbn, [{v:"",t:"自动选择(最近完整批次)"}].concat(
+    STATE.batches.filter(b=>b.state==="complete").map(b=>({v:b.batch_no,t:b.batch_no}))));
+}
+
+async function renderAudit() {
+  const type = $("#auditEntity").value; const id = $("#auditId").value;
+  const qs = new URLSearchParams();
+  if (type) qs.set("entity_type", type);
+  if (id) qs.set("entity_id", id);
+  qs.set("limit", "300");
+  const data = await api("GET", "/api/audit?"+qs.toString());
+  $("#auditTable").innerHTML = table(
+    ["时间","实体","动作","操作人","详情","来源链"],
+    data.items.map(e=>[esc((e.created_at||"").replace("T"," ").slice(0,19)),
+      `${esc(e.entity_type)}${e.entity_id?("#"+e.entity_id):""} ${esc(e.ref)}`,
+      `<b>${esc(e.action)}</b>`, esc(e.actor_id), jsonView(e.details),
+      (e.sources||[]).map(s=>s.entity_id
+        ? srcLink(s.entity_type, s.entity_id, `${s.entity_type}#${s.entity_id}${s.action?(" "+s.action):""}`)
+        : `<span class="src" title="${esc(s.action)}">${esc(s.entity_type)} ${esc(s.ref||"")}</span>`).join("")]));
+}
+
+async function quickState(code, state) {
+  try { await api("POST", `/api/circuits/${encodeURIComponent(code)}/state`, {state, note:"页面操作"});
+    toast(`回路 ${code} 已切换为 ${state}`); await loadAll(); }
+  catch(e){ toast(e.message, "err"); }
+}
+async function quickRecover(id) {
+  try { const r = await api("POST", `/api/trips/${id}/recover`, {});
+    toast(`恢复完成：接电 ${r.restored.length} 箱，待补 ${r.pending_supply.length} 箱`);
+    await loadAll(); }
+  catch(e){ toast(e.message, "err"); }
+}
+
+// 表单绑定
+function bindForm(id, path, opts={}) {
+  $("#"+id).addEventListener("submit", async ev => {
+    ev.preventDefault();
+    const fd = new FormData(ev.target);
+    let body = {};
+    fd.forEach((v,k)=>{ body[k] = v; });
+    if (opts.numeric) opts.numeric.forEach(k=>{ if (body[k]!=="") body[k]=Number(body[k]); });
+    if (body.preferred_circuit==="") delete body.preferred_circuit;
+    if (body.batch_no==="") delete body.batch_no;
+    if (id==="f-release") { body.reefer_codes = String(body.codes).split(",").map(s=>s.trim()).filter(Boolean); delete body.codes; }
+    if (id==="f-recover") { const tid = body.trip_id; body.trip_id && delete body.trip_id;
+      try { const r = await api("POST", `/api/trips/${tid}/recover`, body);
+        toast(`恢复：接电 ${r.restored.length}，待补 ${r.pending_supply.length}`); ev.target.reset(); await loadAll(); }
+      catch(e){ showErr(e); }
+      return;
+    }
+    try {
+      const r = await api("POST", path, body);
+      if (opts.success) opts.success(r, body); else toast("操作成功");
+      ev.target.reset(); await loadAll();
+    } catch(e){ showErr(e); }
+  });
+}
+function showErr(e) {
+  const d = e.payload && e.payload.details;
+  toast(d ? (e.message + "\n" + JSON.stringify(d, null, 2)) : e.message, "err");
+}
+bindForm("f-reefer","/api/reefers",{numeric:["required_kw","set_temp_c"]});
+bindForm("f-circuit","/api/circuits",{numeric:["capacity_kw"]});
+bindForm("f-voyage","/api/voyages");
+bindForm("f-batch","/api/batches");
+bindForm("f-connect","/api/connect-requests",{numeric:["actual_temp_c"],
+  success:(r)=>toast(r.outcome==="connected"?`已接电：${r.assignment.reefer_code} → ${r.assignment.circuit_code}`
+    :`容量不足已排队，缺口 ${r.gap_kw} kW`, r.outcome==="connected"?"ok":"info")});
+bindForm("f-release","/api/gate-release",{success:(r)=>toast(`已放行装船 ${r.released.length} 箱：${r.released.map(x=>x.reefer_code).join(", ")}`)});
+bindForm("f-trip","/api/trips",{success:(r)=>toast(`跳闸#${r.trip_id} 已登记，失电重排 ${r.dropped.length} 箱`, "err")});
+bindForm("f-cstate",null,{});
+bindForm("f-reschedule",null,{});
+bindForm("f-batch-done",null,{});
+
+// 后三个表单路径带参数，单独处理
+$("#f-cstate").addEventListener("submit", async ev=>{ ev.preventDefault();
+  const body = formObj(ev.target);
+  try { await api("POST", `/api/circuits/${encodeURIComponent(body.circuit_code)}/state`,
+      {state:body.state, note:body.note}); toast("回路状态已切换"); ev.target.reset(); await loadAll(); }
+  catch(e){ showErr(e); } });
+$("#f-reschedule").addEventListener("submit", async ev=>{ ev.preventDefault();
+  const body = formObj(ev.target);
+  try { const r = await api("POST", `/api/voyages/${encodeURIComponent(body.voyage_no)}/reschedule`,
+      {etd:body.etd}); toast(`船期已变更，${r.invalidated.length} 个未装船安排失效并重排`);
+    ev.target.reset(); await loadAll(); }
+  catch(e){ showErr(e); } });
+$("#f-batch-done").addEventListener("submit", async ev=>{ ev.preventDefault();
+  const body = formObj(ev.target);
+  try { await api("POST", `/api/batches/${encodeURIComponent(body.batch_no)}/complete`, {});
+    toast(`批次 ${body.batch_no} 已封存为完整批次`); ev.target.reset(); await loadAll(); }
+  catch(e){ showErr(e); } });
+function formObj(f){ const o={}; new FormData(f).forEach((v,k)=>o[k]=v); return o; }
+
+// Tab 切换
+$("#tabs").addEventListener("click", ev=>{
+  const btn = ev.target.closest("button"); if(!btn) return;
+  $("#tabs").querySelectorAll("button").forEach(b=>b.classList.toggle("active", b===btn));
+  document.querySelectorAll("main > section").forEach(s=>s.hidden = s.id!=="tab-"+btn.dataset.tab);
+  if (btn.dataset.tab==="audit") renderAudit();
+});
+loadAll();
 </script>
 </body>
 </html>

@@ -1,29 +1,61 @@
-import tempfile
-import unittest
-from pathlib import Path
-
-from app import build_service
-from src.domain import Actor, Conflict
+"""完整流程：建档→开批次→接电→封存完整批次→装船放行→审计溯源。"""
+from tests.support import ELEC, PLANNER, LedgerTestCase
 
 
-CREATE_DATA = {'vessel': 'HaiYun', 'berth': 'B12', 'vessel_length_m': 180, 'berth_length_m': 220, 'draft_m': 10.2, 'berth_depth_m': 11.5, 'eta_hour': 6, 'etd_hour': 18, 'risk_level': 'medium', 'dangerous_goods': False, 'dangerous_class': ''}
-FLOW = [('confirm', 'port_controller', {'pilot_id': 'P-01'}, 'confirmed'), ('berth', 'port_controller', {'actual_draft_m': 10.3}, 'berthed'), ('depart', 'port_controller', {'cargo_operation_complete': True}, 'departed')]
+class WorkflowTest(LedgerTestCase):
+    def _seed(self):
+        self.create_circuit("C-A", 15)
+        self.create_circuit("C-B", 8)
+        self.create_voyage("V-101")
+        self.create_reefer("RF-001", 6, -18, "V-101")
+        self.create_reefer("RF-002", 5, -18, "V-101")
+        self.service.create_batch(ELEC, {"batch_no": "B-1", "note": "夜班接电"})
 
+    def test_connect_complete_batch_load_and_audit(self):
+        self._seed()
+        r1 = self.connect("RF-001", request_id="REQ-1", batch_no="B-1")
+        r2 = self.connect("RF-002", request_id="REQ-2", batch_no="B-1")
+        self.assertEqual(r1["outcome"], "connected")
+        self.assertEqual(r2["outcome"], "connected")
+        # 紧凑装箱：RF-001(6kW) 装进 8kW 回路 C-B（剩2kW），RF-002(5kW) 进 C-A
+        self.assertEqual(r1["assignment"]["circuit_code"], "C-B")
+        self.assertEqual(r2["assignment"]["circuit_code"], "C-A")
 
-class WorkflowTest(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.service = build_service(str(Path(self.temp.name) / "test.db"))
+        # 批次内全部接电后可封存为完整批次
+        batch = self.service.complete_batch(ELEC, "B-1")
+        self.assertEqual(batch["state"], "complete")
 
-    def tearDown(self):
-        self.temp.cleanup()
+        # 装船放行：必须已接电；装船后安排定格 loaded，回路容量释放
+        release = self.service.gate_release(
+            PLANNER, {"voyage_no": "V-101", "reefer_codes": ["RF-001", "RF-002"]})
+        self.assertEqual(len(release["released"]), 2)
+        assn1 = self.active("RF-001")
+        self.assertIsNone(assn1)  # loaded 不再是活跃安排
 
-    def test_complete_workflow_and_audit(self):
-        record = self.service.create(Actor("creator", "port_controller"), "VOY-21001", CREATE_DATA)
-        self.assertEqual(record["state"], "draft")
-        for action, role, data, expected_state in FLOW:
-            record = self.service.act(Actor("operator", role), record["id"], record["version"], action, data)
-            self.assertEqual(record["state"], expected_state)
-        timeline = self.service.timeline(Actor("creator", "port_controller"), record["id"])
-        self.assertEqual(len(timeline), len(FLOW) + 1)
-        self.assertEqual(timeline[-1]["action"], FLOW[-1][0])
+        # 审计可追到接电与装船依据
+        rid = self.service.repository
+        reefer1 = rid.readonly().get_reefer_by_code("RF-001")
+        events = self.service.timeline(ELEC, "reefer", reefer1["id"])
+        actions = [e["action"] for e in events]
+        self.assertIn("registered", actions)
+
+        assn_events = self.service.timeline(ELEC, "assignment", r1["assignment"]["id"])
+        # 时间线按时间倒序返回：装船在接电之后，故顺序为 loaded -> connected
+        assn_actions = [e["action"] for e in assn_events]
+        self.assertEqual(assn_actions, ["loaded", "connected"])
+        loaded_event = assn_events[0]
+        self.assertIn("frozen_basis", loaded_event["details"])  # 已装船保留原依据
+        # 来源链指回接电安排与船期放行
+        kinds = {(s["entity_type"], s.get("action")) for s in loaded_event["sources"]}
+        self.assertIn(("assignment", "connected"), kinds)
+        self.assertIn(("voyage", "gate_release"), kinds)
+
+    def test_temp_check_before_connect_rejects(self):
+        self._seed()
+        from src.domain import ValidationError
+        with self.assertRaises(ValidationError):
+            self.connect("RF-001", request_id="REQ-BAD", actual_temp=5.0)
+        # 被拒绝后没有活跃安排
+        self.assertIsNone(self.active("RF-001"))
+        events = self.service.timeline(ELEC)
+        self.assertTrue(any(e["action"] == "connect_rejected" for e in events))

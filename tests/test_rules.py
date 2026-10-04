@@ -1,32 +1,49 @@
+"""纯规则：温控容差、容量核对、选回路、缺口。"""
 import unittest
 
-from src.domain import Actor, ValidationError
+from src.domain import ValidationError
 from src.rules import DomainRules
-
-
-CREATE_DATA = {'vessel': 'HaiYun', 'berth': 'B12', 'vessel_length_m': 180, 'berth_length_m': 220, 'draft_m': 10.2, 'berth_depth_m': 11.5, 'eta_hour': 6, 'etd_hour': 18, 'risk_level': 'medium', 'dangerous_goods': False, 'dangerous_class': ''}
-FLOW = [('confirm', 'port_controller', {'pilot_id': 'P-01'}, 'confirmed'), ('berth', 'port_controller', {'actual_draft_m': 10.3}, 'berthed'), ('depart', 'port_controller', {'cargo_operation_complete': True}, 'departed')]
 
 
 class RulesTest(unittest.TestCase):
     def setUp(self):
         self.rules = DomainRules()
 
-    def test_prepare_create(self):
-        prepared = self.rules.prepare_create(CREATE_DATA)
-        self.assertEqual(prepared["safety_margin_m"], 1.3)
-        self.assertTrue(prepared["quay_ok"])
-        self.assertEqual(prepared["window_hours"], 12)
+    def test_temp_check_pass_and_fail(self):
+        ok = self.rules.temp_check(-18.0, -16.0)
+        self.assertTrue(ok["temp_ok"])
+        bad = self.rules.temp_check(-18.0, -10.0)
+        self.assertFalse(bad["temp_ok"])
+        self.assertEqual(bad["temp_delta_c"], 8.0)
 
-    def test_action_calculation(self):
-        action, role, data, expected_state = FLOW[0]
-        record = {"id": 1, "state": self.rules.INITIAL_STATE, "payload": self.rules.prepare_create(CREATE_DATA)}
-        state, payload, summary = self.rules.apply_action(record, action, data)
-        self.assertEqual(state, expected_state)
-        self.assertEqual(payload["pilot_id"], "P-01")
-
-    def test_invalid_input(self):
-        invalid = dict(CREATE_DATA)
-        invalid["draft_m"] = 12.0
+    def test_check_before_connect_rejects_temp_mismatch(self):
+        reefer = {"set_temp_c": -18.0}
+        self.assertTrue(self.rules.check_before_connect(reefer, {"actual_temp_c": -17.0})["temp_ok"])
         with self.assertRaises(ValidationError):
-            self.rules.prepare_create(invalid)
+            self.rules.check_before_connect(reefer, {"actual_temp_c": 0.0})
+
+    def test_pick_circuit_and_gap(self):
+        circuits = [
+            {"circuit_code": "A", "state": "normal", "capacity_kw": 20, "remaining_kw": 4},
+            {"circuit_code": "B", "state": "normal", "capacity_kw": 20, "remaining_kw": 12},
+            {"circuit_code": "X", "state": "tripped", "capacity_kw": 40, "remaining_kw": 0},
+        ]
+        picked = self.rules.pick_circuit(circuits, 5)
+        self.assertEqual(picked["circuit_code"], "B")
+        self.assertIsNone(self.rules.pick_circuit(circuits, 20))
+        self.assertEqual(self.rules.capacity_gap(circuits, 20), 8.0)
+
+    def test_non_normal_circuit_has_no_capacity(self):
+        self.assertEqual(
+            self.rules.circuit_available_kw({"state": "tripped", "capacity_kw": 30}, 0.0), 0.0)
+
+    def test_voyage_etd_must_be_iso(self):
+        with self.assertRaises(ValidationError):
+            self.rules.validate_voyage({"voyage_no": "V1", "vessel": "X", "etd": "明天"})
+        data = self.rules.validate_voyage(
+            {"voyage_no": "V1", "vessel": "X", "etd": "2026-10-08T18:00:00+08:00"})
+        self.assertEqual(data["voyage_no"], "V1")
+
+
+if __name__ == "__main__":
+    unittest.main()

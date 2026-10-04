@@ -2,10 +2,10 @@
   "projectId": "pair-wise-gsb-45",
   "projectName": "pair-wise-gsb-45",
   "category": "地狱 Python 模块化项目",
-  "businessDomain": "港口调度",
+  "businessDomain": "港口冷链供电调度",
   "projectForm": "完整项目",
   "codeScope": "backend, frontend",
   "languages": ["Python", "HTML", "CSS", "JavaScript"],
-  "summary": "港口泊位与航道调度服务，覆盖靠泊可行性、吃水安全、时间窗冲突和审计状态机。",
+  "summary": "港区冷藏箱供电回路台账：接电前核对容量与温控，容量不足排队记缺口；船期或回路变化时未装船安排立即失效重排、已装船保留原依据；并发接电先到先得、后来者留冲突候选；跳闸后从最近完整批次恢复、缺回路按待补；接电、跳闸与重排全链路审计溯源。",
   "containerized": false
 }
