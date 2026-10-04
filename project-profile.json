@@ -6,6 +6,6 @@
   "projectForm": "完整项目",
   "codeScope": "backend, frontend",
   "languages": ["Python", "HTML", "CSS", "JavaScript"],
-  "summary": "港口泊位与航道调度服务，覆盖靠泊可行性、吃水安全、时间窗冲突和审计状态机。",
+  "summary": "港区冷藏箱供电台账：冷藏箱/回路/跳闸/装船统一台账，容量与温控核对接电、跳闸船期失效重排、先到先得冲突候选、批次恢复与来源审计。",
   "containerized": false
 }

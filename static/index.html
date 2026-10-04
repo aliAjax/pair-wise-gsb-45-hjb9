@@ -1,33 +1,168 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>港口泊位与航道调度</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #17212b; }
-    main { max-width: 960px; margin: auto; }
-    button { padding: .55rem .9rem; cursor: pointer; }
-    pre { background: #f4f6f8; padding: 1rem; overflow: auto; border-radius: 8px; }
-    .row { display: flex; gap: 1rem; align-items: center; }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>港区冷藏箱供电台账</title>
+<style>
+  :root { --line:#d9e0e7; --bg:#f5f7fa; --ok:#1a7f37; --bad:#c9352c; --warn:#b26a00; --info:#0b5cad; }
+  * { box-sizing: border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; margin:0; background:var(--bg); color:#17212b; }
+  header { background:#10293f; color:#fff; padding:.9rem 1.2rem; display:flex; align-items:center; gap:1rem; flex-wrap:wrap; }
+  header h1 { font-size:1.05rem; margin:0; }
+  header .grow { flex:1; }
+  main { padding:1rem 1.2rem 3rem; max-width:1280px; margin:auto; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:1rem; }
+  @media (max-width:1000px){ .grid{grid-template-columns:1fr;} }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:.9rem 1rem; }
+  .card h2 { font-size:.92rem; margin:0 0 .6rem; color:#33424f; display:flex; justify-content:space-between; align-items:center; }
+  table { width:100%; border-collapse:collapse; font-size:.8rem; }
+  th,td { text-align:left; padding:.32rem .4rem; border-bottom:1px solid #eef1f4; vertical-align:top; }
+  th { color:#5b6b7a; font-weight:600; background:#fafbfc; position:sticky; top:0; }
+  .scroll { max-height:330px; overflow:auto; }
+  .pill { display:inline-block; padding:.08rem .45rem; border-radius:99px; font-size:.72rem; font-weight:600; }
+  .s-connected,.s-active,.s-complete,.s-loaded { background:#e3f4e8; color:var(--ok); }
+  .s-queued,.s-candidate,.s-tripped { background:#fdeee2; color:var(--warn); }
+  .s-pending_circuit,.s-pending_recovery,.s-failed { background:#fbe5e3; color:var(--bad); }
+  .s-maintenance,.s-voided,.s-loaded_frozen { background:#eceff3; color:#5b6b7a; }
+  .s-waiting { background:#e6eefb; color:var(--info); }
+  button { padding:.4rem .7rem; border:1px solid #b9c4cd; background:#fff; border-radius:6px; cursor:pointer; font-size:.8rem; }
+  button.primary { background:#0b5cad; color:#fff; border-color:#0b5cad; }
+  button.danger { background:#c9352c; color:#fff; border-color:#c9352c; }
+  button:hover { filter:brightness(.97); }
+  .toolbar { display:flex; gap:.5rem; flex-wrap:wrap; margin-bottom:.8rem; align-items:center; }
+  .forms { display:grid; grid-template-columns:repeat(4,1fr); gap:.8rem; margin:.8rem 0; }
+  @media (max-width:1000px){ .forms{grid-template-columns:1fr 1fr;} }
+  form.mini { background:#fff; border:1px solid var(--line); border-radius:10px; padding:.7rem .8rem; }
+  form.mini h3 { margin:0 0 .5rem; font-size:.8rem; color:#33424f; }
+  input,select { width:100%; padding:.34rem .4rem; border:1px solid #c2ccd4; border-radius:5px; font-size:.78rem; margin-bottom:.35rem; }
+  label.f { font-size:.68rem; color:#718096; display:block; margin-bottom:.12rem; }
+  #toast { position:fixed; right:1rem; bottom:1rem; max-width:420px; z-index:50; display:flex; flex-direction:column; gap:.4rem; }
+  .toast-item { padding:.55rem .8rem; border-radius:8px; color:#fff; font-size:.8rem; box-shadow:0 4px 14px rgba(0,0,0,.18); }
+  .toast-ok { background:#1a7f37; } .toast-err { background:#c9352c; } .toast-info { background:#0b5cad; }
+  .gap { color:var(--bad); font-weight:700; }
+  .muted { color:#8592a1; }
+  .src { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.68rem; color:#0b5cad; background:#eef4fc; padding:0 .3rem; border-radius:4px; }
+  dialog { border:1px solid var(--line); border-radius:10px; width:min(760px,92vw); padding:0; }
+  dialog::backdrop { background:rgba(15,30,45,.45); }
+  .dlg-head { padding:.7rem 1rem; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; font-weight:600; }
+  .dlg-body { padding:.8rem 1rem; max-height:65vh; overflow:auto; }
+  tr.actable { cursor:pointer; } tr.actable:hover { background:#f4f8fd; }
+  .stat { font-size:.72rem; color:#5b6b7a; }
+</style>
 </head>
 <body>
+<header>
+  <h1>港区冷藏箱供电台账</h1>
+  <span class="stat" id="stat-line">加载中…</span>
+  <span class="grow"></span>
+  <label class="stat" style="color:#cfe0f0">身份
+    <select id="role" style="margin-left:.3rem">
+      <option value="admin">管理员 admin</option>
+      <option value="yard_planner">堆场计划员</option>
+      <option value="electrician" selected>电工</option>
+      <option value="vessel_clerk">船务单证员</option>
+    </select>
+  </label>
+  <button id="refresh">刷新台账</button>
+</header>
 <main>
-  <h1>港口泊位与航道调度</h1>
-  <p>最小演示页。完整业务流程通过README中的JSON接口调用。</p>
-  <div class="row"><button id="load">加载记录</button><button id="stats">查看状态统计</button></div>
-  <pre id="output">点击上方按钮读取服务状态。</pre>
+  <div class="forms">
+    <form class="mini" id="f-circuit"><h3>① 登记供电回路</h3>
+      <label class="f">回路编号</label><input name="circuit_code" placeholder="P-03" required>
+      <label class="f">容量 kW / 温控下限℃ / 上限℃</label>
+      <div style="display:flex;gap:.3rem">
+        <input name="capacity_kw" type="number" step="0.1" value="15" required>
+        <input name="temp_min_c" type="number" step="0.1" value="-25">
+        <input name="temp_max_c" type="number" step="0.1" value="10">
+      </div>
+      <label class="f">箱区</label><input name="bay" placeholder="A-01">
+      <button class="primary">登记回路</button>
+    </form>
+    <form class="mini" id="f-voyage"><h3>② 登记船期</h3>
+      <label class="f">船名</label><input name="vessel" placeholder="MV FROST" required>
+      <label class="f">航次号</label><input name="voyage_no" placeholder="V-101" required>
+      <label class="f">开航时刻（小时序号）</label><input name="sail_hour" type="number" step="0.5" value="24">
+      <button class="primary">登记船期</button>
+    </form>
+    <form class="mini" id="f-reefer"><h3>③ 冷藏箱建档</h3>
+      <label class="f">箱号</label><input name="reefer_no" placeholder="RX-202601" required>
+      <label class="f">需求 kW / 设定℃ / 容差℃</label>
+      <div style="display:flex;gap:.3rem">
+        <input name="required_kw" type="number" step="0.1" value="6" required>
+        <input name="temp_setpoint_c" type="number" step="0.1" value="-18">
+        <input name="temp_tolerance_c" type="number" step="0.1" value="2">
+      </div>
+      <label class="f">船期ID（可空）</label><input name="voyage_id" type="number" placeholder="1">
+      <button class="primary">建档</button>
+    </form>
+    <form class="mini" id="f-batch"><h3>④ 批量接电 / 失败恢复</h3>
+      <label class="f">冷藏箱ID，逗号分隔（如 1,2,3）</label>
+      <input name="ids" placeholder="1,2,3" required>
+      <div style="display:flex;gap:.4rem">
+        <button class="primary" type="button" data-act="batch-connect">批量接电</button>
+        <button type="button" data-act="batch-fail">登记失败批次</button>
+        <button type="button" data-act="recover">从最近完整批次恢复</button>
+      </div>
+      <label class="f" style="margin-top:.4rem">失败原因（失败时）</label>
+      <input name="reason" placeholder="插头损坏 / 现场断电">
+    </form>
+  </div>
+
+  <div class="toolbar">
+    <button id="pump">手动重排队列</button>
+    <span class="muted">跳闸恢复/接电后会自动重排未装船箱；待补(recovery)项只走“批次恢复”。</span>
+  </div>
+
+  <div class="grid">
+    <div class="card"><h2>冷藏箱台账 <span class="muted" id="cnt-reefers"></span></h2>
+      <div class="scroll"><table id="t-reefers">
+        <thead><tr><th>ID</th><th>箱号</th><th>状态</th><th>回路/依据</th><th>缺口</th><th>船期</th></tr></thead>
+        <tbody></tbody></table></div>
+    </div>
+    <div class="card"><h2>供电回路（容量/温控/状态）</h2>
+      <div class="scroll"><table id="t-circuits">
+        <thead><tr><th>ID</th><th>回路</th><th>状态</th><th>占用/容量</th><th>温控℃</th><th>操作</th></tr></thead>
+        <tbody></tbody></table></div>
+    </div>
+    <div class="card"><h2>排队 / 待补 / 冲突候选</h2>
+      <div class="scroll"><table id="t-queue">
+        <thead><tr><th>箱ID</th><th>原因</th><th>缺口kW</th><th>来源</th></tr></thead>
+        <tbody></tbody></table>
+      <hr style="border:none;border-top:1px solid var(--line)">
+      <table id="t-conflicts">
+        <thead><tr><th>#</th><th>箱ID</th><th>提交人</th><th>处理</th></tr></thead>
+        <tbody></tbody></table></div>
+    </div>
+  </div>
+
+  <div class="grid" style="margin-top:1rem">
+    <div class="card"><h2>跳闸记录</h2>
+      <div class="scroll"><table id="t-trips">
+        <thead><tr><th>#</th><th>回路ID</th><th>原因</th><th>发生(UTC)</th><th>恢复</th></tr></thead>
+        <tbody></tbody></table></div>
+    </div>
+    <div class="card"><h2>船期 / 批次</h2>
+      <h3 style="font-size:.78rem;margin:.2rem 0">船期</h3>
+      <table id="t-voyages"><thead><tr><th>ID</th><th>船/航次</th><th>开航</th><th>改期</th></tr></thead><tbody></tbody></table>
+      <h3 style="font-size:.78rem;margin:.7rem 0 .2rem">批次</h3>
+      <div class="scroll" style="max-height:170px"><table id="t-batches">
+        <thead><tr><th>ID</th><th>批次号</th><th>状态</th><th>箱数</th></tr></thead><tbody></tbody></table></div>
+    </div>
+    <div class="card"><h2>最近审计事件（接电/跳闸/重排来源）</h2>
+      <div class="scroll"><table id="t-events">
+        <thead><tr><th>实体</th><th>动作</th><th>摘要</th><th>来源</th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </div>
 </main>
-<script>
-const headers = {"X-User-Id":"demo-admin","X-Role":"admin","X-Org":"demo"};
-async function show(path) {
-  const response = await fetch(path, {headers});
-  const data = await response.json();
-  document.getElementById("output").textContent = JSON.stringify(data, null, 2);
-}
-document.getElementById("load").onclick = () => show("/api/records?limit=20");
-document.getElementById("stats").onclick = () => show("/api/stats");
-</script>
+
+<dialog id="dlg">
+  <div class="dlg-head"><span id="dlg-title">审计时间线</span><button onclick="document.getElementById('dlg').close()">关闭</button></div>
+  <div class="dlg-body"><table id="t-timeline">
+    <thead><tr><th>#</th><th>动作</th><th>操作人</th><th>摘要</th><th>来源</th></tr></thead><tbody></tbody></table></div>
+</dialog>
+
+<div id="toast"></div>
+<script src="/static/app.js"></script>
 </body>
 </html>

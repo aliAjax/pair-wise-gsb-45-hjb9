@@ -1,11 +1,15 @@
 """领域基础类型与输入校验。"""
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 class DomainError(Exception):
     status = 400
     code = "domain_error"
+
+    def __init__(self, message: str = "", data: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(message)
+        self.data = data
 
 
 class ValidationError(DomainError):
@@ -57,9 +61,9 @@ def number(data: Dict[str, Any], key: str, minimum: float = None, maximum: float
         raise ValidationError("%s必须是数字" % key)
     value = float(value)
     if minimum is not None and value < minimum:
-        raise ValidationError("%s不能小于%s" % (key, minimum))
+        raise ValidationError("%s不能小于%s" % key, minimum)
     if maximum is not None and value > maximum:
-        raise ValidationError("%s不能大于%s" % (key, maximum))
+        raise ValidationError("%s不能大于%s" % key, maximum)
     return value
 
 
@@ -68,9 +72,9 @@ def integer(data: Dict[str, Any], key: str, minimum: int = None, maximum: int = 
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValidationError("%s必须是整数" % key)
     if minimum is not None and value < minimum:
-        raise ValidationError("%s不能小于%s" % (key, minimum))
+        raise ValidationError("%s不能小于%s" % key, minimum)
     if maximum is not None and value > maximum:
-        raise ValidationError("%s不能大于%s" % (key, maximum))
+        raise ValidationError("%s不能大于%s" % key, maximum)
     return value
 
 
@@ -79,19 +83,3 @@ def choice(data: Dict[str, Any], key: str, allowed: List[str]) -> str:
     if value not in allowed:
         raise ValidationError("%s只能是%s" % (key, "/".join(allowed)))
     return value
-
-
-def boolean(data: Dict[str, Any], key: str, default: bool = False) -> bool:
-    value = data.get(key, default)
-    if not isinstance(value, bool):
-        raise ValidationError("%s必须是布尔值" % key)
-    return value
-
-
-def text_list(data: Dict[str, Any], key: str, minimum: int = 0) -> List[str]:
-    value = data.get(key, [])
-    if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
-        raise ValidationError("%s必须是文本列表" % key)
-    if len(value) < minimum:
-        raise ValidationError("%s至少需要%s项" % (key, minimum))
-    return [item.strip() for item in value]

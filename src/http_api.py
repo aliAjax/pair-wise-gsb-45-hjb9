@@ -3,20 +3,21 @@ import json
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .domain import Actor, DomainError, PermissionDenied, ValidationError
 
 
-RECORD_RE = re.compile(r"^/api/records/(\d+)$")
-ACTION_RE = re.compile(r"^/api/records/(\d+)/actions/([a-z_]+)$")
-AUDIT_RE = re.compile(r"^/api/records/(\d+)/audit$")
+RESOURCE_RE = re.compile(r"^/api/(reefers|circuits|voyages|trips|queues|batches|conflicts|events)/?$")
+ITEM_AUDIT_RE = re.compile(r"^/api/(reefers|circuits|voyages|batches)/(\d+)/audit$")
+ITEM_ACTION_RE = re.compile(
+    r"^/api/(reefers|circuits|voyages|conflicts)/(\d+)/(connect|load|trip|recover|maintenance|revise|resolve)$")
 
 
 def make_handler(service: Any, static_dir: Path):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "port-berth/1.0"
+        server_version = "reefer-ledger/1.0"
 
         def log_message(self, fmt: str, *args: Any) -> None:
             return
@@ -28,12 +29,12 @@ def make_handler(service: Any, static_dir: Path):
                 raise PermissionDenied("缺少X-User-Id或X-Role")
             return Actor(user_id=user_id, role=role, organization=self.headers.get("X-Org", ""))
 
-        def _body(self) -> Dict[str, Any]:
+        def _body(self) -> dict:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError as exc:
                 raise ValidationError("Content-Length无效") from exc
-            if length > 1024 * 1024:
+            if length > 2 * 1024 * 1024:
                 raise ValidationError("请求体过大")
             raw = self.rfile.read(length) if length else b"{}"
             try:
@@ -57,35 +58,74 @@ def make_handler(service: Any, static_dir: Path):
 
         def _handle_error(self, exc: Exception) -> None:
             if isinstance(exc, DomainError):
-                self._send(exc.status, {"error": exc.code, "message": str(exc)})
+                payload = {"error": exc.code, "message": str(exc)}
+                if getattr(exc, "data", None):
+                    payload["data"] = exc.data
+                self._send(exc.status, payload)
             else:
                 self._send(500, {"error": "internal_error", "message": "服务内部错误"})
+
+        def _list_resource(self, resource: str, query: dict) -> None:
+            actor = self._actor()
+            state = query.get("state", [None])[0]
+            if resource == "reefers":
+                self._send(200, {"items": service.list_reefers(actor, state=state)})
+            elif resource == "circuits":
+                self._send(200, {"items": service.list_circuits(actor)})
+            elif resource == "voyages":
+                self._send(200, {"items": service.list_voyages(actor)})
+            elif resource == "trips":
+                circuit_id = query.get("circuit_id", [None])[0]
+                self._send(200, {"items": service.list_trips(
+                    actor, int(circuit_id) if circuit_id else None)})
+            elif resource == "queues":
+                self._send(200, {"items": service.list_queue(actor)})
+            elif resource == "batches":
+                self._send(200, {"items": service.list_batches(actor)})
+            elif resource == "conflicts":
+                self._send(200, {"items": service.list_conflicts(actor)})
+            elif resource == "events":
+                entity_type = query.get("entity_type", [None])[0]
+                limit = int(query.get("limit", ["200"])[0])
+                self._send(200, {"items": service.events(actor, entity_type=entity_type, limit=limit)})
 
         def do_GET(self) -> None:
             try:
                 parsed = urlparse(self.path)
-                if parsed.path == "/health":
-                    self._send(200, {"status": "ok", "service": "port-berth", "database": service.repository.health()})
+                path = parsed.path
+                if path == "/health":
+                    self._send(200, {"status": "ok", "service": "reefer-ledger",
+                                     "database": service.repository.health()})
                     return
-                if parsed.path == "/":
+                if path == "/":
                     page = (static_dir / "index.html").read_bytes()
                     self._send(200, page, "text/html; charset=utf-8")
                     return
-                if parsed.path == "/api/records":
-                    query = parse_qs(parsed.query)
-                    records = service.list_records(self._actor(), state=query.get("state", [None])[0], limit=int(query.get("limit", ["100"])[0]))
-                    self._send(200, {"items": records})
+                if path.startswith("/static/"):
+                    name = path.split("/static/", 1)[1]
+                    if "/" in name or ".." in name or name not in {"app.js"}:
+                        self._send(404, {"error": "not_found", "message": "资源不存在"})
+                        return
+                    content = (static_dir / name).read_bytes()
+                    ctype = "application/javascript; charset=utf-8" if name.endswith(".js") else "text/plain; charset=utf-8"
+                    self._send(200, content, ctype)
                     return
-                match = RECORD_RE.match(parsed.path)
-                if match:
-                    self._send(200, service.get_record(self._actor(), int(match.group(1))))
+                if path == "/api/ledger":
+                    self._send(200, service.ledger(self._actor()))
                     return
-                match = AUDIT_RE.match(parsed.path)
-                if match:
-                    self._send(200, {"items": service.timeline(self._actor(), int(match.group(1)))})
-                    return
-                if parsed.path == "/api/stats":
+                if path == "/api/stats":
                     self._send(200, service.stats(self._actor()))
+                    return
+                match = RESOURCE_RE.match(path)
+                if match:
+                    self._list_resource(match.group(1), parse_qs(parsed.query))
+                    return
+                match = ITEM_AUDIT_RE.match(path)
+                if match:
+                    entity_name = {"reefers": "reefer", "circuits": "circuit",
+                                   "voyages": "voyage", "batches": "batch"}[match.group(1)]
+                    self._send(200, {"items": service.timeline(
+                        self._actor(), entity_name, int(match.group(2)))})
                     return
                 self._send(404, {"error": "not_found", "message": "路径不存在"})
             except Exception as exc:
@@ -94,18 +134,50 @@ def make_handler(service: Any, static_dir: Path):
         def do_POST(self) -> None:
             try:
                 parsed = urlparse(self.path)
+                path = parsed.path
                 body = self._body()
-                if parsed.path == "/api/records":
-                    record = service.create(self._actor(), body.get("reference", ""), body.get("data", {}))
-                    self._send(201, record)
+                actor = self._actor()
+                if path == "/api/reefers":
+                    self._send(201, service.create_reefer(actor, body.get("data", body)))
                     return
-                match = ACTION_RE.match(parsed.path)
+                if path == "/api/circuits":
+                    self._send(201, service.create_circuit(actor, body.get("data", body)))
+                    return
+                if path == "/api/voyages":
+                    self._send(201, service.create_voyage(actor, body.get("data", body)))
+                    return
+                if path == "/api/batches/connect":
+                    self._send(201, service.batch_connect(actor, body.get("data", body)))
+                    return
+                if path == "/api/batches/fail":
+                    self._send(200, service.batch_fail(actor, body.get("data", body)))
+                    return
+                if path == "/api/batches/recover":
+                    self._send(200, service.recover_from_batch(actor, body.get("data", body)))
+                    return
+                if path == "/api/queues/pump":
+                    self._send(200, service.pump_queue(actor))
+                    return
+                match = ITEM_ACTION_RE.match(path)
                 if match:
-                    version = body.get("expected_version")
-                    if not isinstance(version, int):
-                        raise ValidationError("expected_version必须是整数")
-                    record = service.act(self._actor(), int(match.group(1)), version, match.group(2), body.get("data", {}))
-                    self._send(200, record)
+                    entity, entity_id, action = match.group(1), int(match.group(2)), match.group(3)
+                    data = body.get("data", body)
+                    if entity == "reefers" and action == "connect":
+                        self._send(200, service.connect(actor, entity_id, data))
+                    elif entity == "reefers" and action == "load":
+                        self._send(200, service.load_reefer(actor, entity_id, data))
+                    elif entity == "circuits" and action == "trip":
+                        self._send(200, service.trip_circuit(actor, entity_id, data))
+                    elif entity == "circuits" and action == "recover":
+                        self._send(200, service.recover_circuit(actor, entity_id, data))
+                    elif entity == "circuits" and action == "maintenance":
+                        self._send(200, service.set_circuit_maintenance(actor, entity_id, data))
+                    elif entity == "voyages" and action == "revise":
+                        self._send(200, service.revise_voyage(actor, entity_id, data))
+                    elif entity == "conflicts" and action == "resolve":
+                        self._send(200, service.resolve_conflict(actor, entity_id, data))
+                    else:
+                        self._send(404, {"error": "not_found", "message": "操作不存在"})
                     return
                 self._send(404, {"error": "not_found", "message": "路径不存在"})
             except Exception as exc:

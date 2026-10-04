@@ -10,7 +10,7 @@ from src.service import Service
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_DB = BASE_DIR / "port-berth.db"
+DEFAULT_DB = BASE_DIR / "reefer-ledger.db"
 DEFAULT_PORT = 8321
 
 
@@ -21,7 +21,7 @@ def build_service(db_path: str) -> Service:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="港口泊位与航道调度")
+    parser = argparse.ArgumentParser(description="港区冷藏箱供电台账")
     parser.add_argument("--db", default=str(DEFAULT_DB), help="SQLite数据库路径")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="HTTP监听端口")
     parser.add_argument("--host", default="127.0.0.1", help="监听地址")
@@ -33,7 +33,7 @@ def main() -> None:
     Path(args.db).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
     service = build_service(args.db)
     server = create_server(args.host, args.port, service, BASE_DIR / "static")
-    print("港口泊位与航道调度 listening on http://%s:%s" % (args.host, args.port), flush=True)
+    print("港区冷藏箱供电台账 listening on http://%s:%s" % (args.host, args.port), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

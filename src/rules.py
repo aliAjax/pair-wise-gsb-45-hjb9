@@ -1,95 +1,148 @@
-"""港口泊位与航道调度领域规则与状态转换。"""
-from typing import Any, Dict, Iterable, Tuple
+"""冷藏箱台账领域规则：校验、温控/容量评估、回路选择、批次恢复。"""
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from .domain import Actor, Conflict, ValidationError, boolean, choice, integer, number, text, text_list
+from .domain import Conflict, ValidationError, choice, number, optional_text, text
 
 
-INITIAL_STATE = "draft"
-CREATE_ROLES = {'port_controller'}
-ACTION_ROLES = {'confirm': {'port_controller'}, 'berth': {'port_controller'}, 'depart': {'port_controller'}, 'cancel': {'port_controller'}}
-TRANSITIONS = {'confirm': {'draft': 'confirmed'}, 'berth': {'confirmed': 'berthed'}, 'depart': {'berthed': 'departed'}, 'cancel': {'draft': 'cancelled', 'confirmed': 'cancelled'}}
+# 实体状态
+REEFER_STATES = {"waiting", "connected", "queued", "pending_circuit", "pending_recovery", "loaded", "cancelled"}
+CIRCUIT_STATES = {"active", "tripped", "maintenance"}
+QUEUE_REASONS = {"gap", "trip", "voyage_change", "circuit_change", "recovery", "batch_rollback", "preferred"}
+CONNECTION_STATES = {"connected", "voided", "superseded", "loaded_frozen"}
+
+# 温控边界（℃）：超出即视为不具备冷藏接电条件
+TEMP_MIN, TEMP_MAX = -35.0, 30.0
+
+CREATE_ROLES = {"yard_planner"}
+ROLE_MATRIX = {
+    "reefer_create": {"yard_planner"},
+    "circuit_update": {"electrician", "yard_planner"},
+    "voyage_update": {"vessel_clerk", "yard_planner"},
+    "connect": {"electrician", "yard_planner"},
+    "load": {"vessel_clerk", "yard_planner"},
+    "batch": {"electrician", "yard_planner"},
+}
 
 
 class DomainRules:
-    INITIAL_STATE = INITIAL_STATE
-
     def known_role(self, role: str) -> bool:
-        all_roles = set(CREATE_ROLES)
-        for roles in ACTION_ROLES.values():
-            all_roles.update(roles)
-        return role == "admin" or role in all_roles
+        roles = set(CREATE_ROLES)
+        for allowed in ROLE_MATRIX.values():
+            roles.update(allowed)
+        return role == "admin" or role in roles
 
-    def role_can_create(self, role: str) -> bool:
-        return role == "admin" or role in CREATE_ROLES
+    def can(self, role: str, permission: str) -> bool:
+        return role == "admin" or role in ROLE_MATRIX.get(permission, set())
 
-    def role_can_action(self, role: str, action: str) -> bool:
-        return role == "admin" or role in ACTION_ROLES.get(action, set())
+    # ---------- 输入校验 ----------
+    def validate_reefer(self, p: Dict[str, Any]) -> Dict[str, Any]:
+        voyage_raw = p.get("voyage_id")
+        if voyage_raw is None:
+            voyage_value = None
+        elif isinstance(voyage_raw, bool):
+            raise ValidationError("voyage_id必须为整数ID")
+        elif isinstance(voyage_raw, int):
+            voyage_value = int(voyage_raw)
+        elif isinstance(voyage_raw, str) and voyage_raw.strip().isdigit():
+            voyage_value = int(voyage_raw.strip())
+        else:
+            raise ValidationError("voyage_id必须为整数ID")
+        data = {
+            "reefer_no": text(p, "reefer_no"),
+            "required_kw": round(number(p, "required_kw", 0.1, 200), 2),
+            "temp_setpoint_c": round(number(p, "temp_setpoint_c", TEMP_MIN, TEMP_MAX), 1),
+            "temp_tolerance_c": round(number(p, "temp_tolerance_c", 0.1, 10), 1),
+            "cargo": optional_text(p, "cargo"),
+            "voyage_id": voyage_value,
+        }
+        return data
 
-    def validate_create(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        p = dict(payload)
-        vessel = text(p, "vessel")
-        berth = text(p, "berth")
-        vessel_length = number(p, "vessel_length_m", 1)
-        berth_length = number(p, "berth_length_m", 1)
-        draft = number(p, "draft_m", 0)
-        berth_depth = number(p, "berth_depth_m", 0)
-        eta = integer(p, "eta_hour", 0, 23)
-        etd = integer(p, "etd_hour", 1, 24)
-        choice(p, "risk_level", ["low", "medium", "high"])
-        dangerous = boolean(p, "dangerous_goods")
-        if etd <= eta:
-            raise ValidationError("etd_hour必须晚于eta_hour")
-        if berth_length < vessel_length:
-            raise ValidationError("泊位长度不足")
-        if berth_depth - draft < 0.5:
-            raise ValidationError("剩余水深不足")
-        if dangerous:
-            text(p, "dangerous_class")
-        return p
+    def validate_circuit(self, p: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "circuit_code": text(p, "circuit_code"),
+            "capacity_kw": round(number(p, "capacity_kw", 0.1, 1000), 2),
+            "temp_min_c": round(number(p, "temp_min_c", TEMP_MIN, TEMP_MAX), 1),
+            "temp_max_c": round(number(p, "temp_max_c", TEMP_MIN, TEMP_MAX), 1),
+            "bay": optional_text(p, "bay"),
+        }
 
-    def prepare_create(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        p = self.validate_create(payload)
-        p["safety_margin_m"] = round(float(p["berth_depth_m"]) - float(p["draft_m"]), 2)
-        p["window_hours"] = int(p["etd_hour"]) - int(p["eta_hour"])
-        p["quay_ok"] = bool(p["berth_length_m"] >= p["vessel_length_m"] and p["safety_margin_m"] >= 0.5)
-        return p
+    def validate_voyage(self, p: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "vessel": text(p, "vessel"),
+            "voyage_no": text(p, "voyage_no"),
+            "sail_hour": number(p, "sail_hour", 0, 240),
+        }
 
-    def check_create_conflicts(self, payload: Dict[str, Any], existing: Iterable[Dict[str, Any]]) -> None:
-        for item in existing:
-            other = item["payload"]
-            if item["state"] in {"cancelled", "departed"} or other.get("berth") != payload.get("berth"):
+    # ---------- 温控与容量 ----------
+    def temp_ok(self, reefer: Dict[str, Any], circuit: Dict[str, Any]) -> bool:
+        lo = reefer["temp_setpoint_c"] - reefer["temp_tolerance_c"]
+        hi = reefer["temp_setpoint_c"] + reefer["temp_tolerance_c"]
+        return circuit["temp_min_c"] <= lo and circuit["temp_max_c"] >= hi
+
+    def circuit_view(self, circuit: Dict[str, Any], connections: List[Dict[str, Any]]) -> Dict[str, Any]:
+        used = round(sum(c["required_kw"] for c in connections if c["circuit_id"] == circuit["id"]), 2)
+        return {
+            "id": circuit["id"],
+            "circuit_code": circuit["circuit_code"],
+            "state": circuit["state"],
+            "capacity_kw": circuit["capacity_kw"],
+            "used_kw": used,
+            "free_kw": round(circuit["capacity_kw"] - used, 2),
+            "temp_min_c": circuit["temp_min_c"],
+            "temp_max_c": circuit["temp_max_c"],
+            "bay": circuit.get("bay", ""),
+            "version": circuit["version"],
+        }
+
+    def circuit_views(self, circuits: Iterable[Dict[str, Any]], connections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [self.circuit_view(c, connections) for c in circuits]
+
+    def candidates_for(self, reefer: Dict[str, Any], views: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
+        """返回（可用候选回路视图列表， 不满足原因列表）。"""
+        eligible: List[Dict[str, Any]] = []
+        blockers: List[str] = []
+        for view in views:
+            if view["state"] != "active":
+                blockers.append("%s:回路%s" % (view["circuit_code"], {"tripped": "跳闸", "maintenance": "检修"}.get(view["state"], view["state"])))
                 continue
-            if int(payload["eta_hour"]) < int(other.get("etd_hour", 0)) and int(payload["etd_hour"]) > int(other.get("eta_hour", 24)):
-                raise Conflict("同一泊位时间窗冲突")
+            if not self.temp_ok(reefer, view):
+                blockers.append("%s:温控不覆盖(%s±%s℃)" % (view["circuit_code"], reefer["temp_setpoint_c"], reefer["temp_tolerance_c"]))
+                continue
+            if view["free_kw"] + 1e-9 < reefer["required_kw"]:
+                blockers.append("%s:容量缺口%.2fkW" % (view["circuit_code"], round(reefer["required_kw"] - view["free_kw"], 2)))
+                continue
+            eligible.append(view)
+        # 最佳适配：满足温控的前提下，剩余容量最小者优先
+        eligible.sort(key=lambda v: (v["free_kw"], v["id"]))
+        return eligible, blockers
 
-    def require_transition(self, record: Dict[str, Any], action: str) -> str:
-        allowed = TRANSITIONS.get(action, {}).get(record["state"])
-        if allowed is None:
-            raise Conflict("当前状态不允许执行%s" % action)
-        return allowed
+    def best_circuit(self, reefer: Dict[str, Any], views: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        eligible, _ = self.candidates_for(reefer, views)
+        return eligible[0] if eligible else None
 
-    def apply_action(self, record: Dict[str, Any], action: str, data: Dict[str, Any]) -> Tuple[str, Dict[str, Any], str]:
-        new_state = self.require_transition(record, action)
-        data = dict(data or {})
-        p = dict(record["payload"])
-        changes: Dict[str, Any] = {}
-        summary = ""
-        if action == "confirm":
-            pilot = text(data, "pilot_id")
-            changes["pilot_id"] = pilot
-            summary = "已确认引航员"
-        elif action == "berth":
-            actual = number(data, "actual_draft_m", 0)
-            if float(p["berth_depth_m"]) - actual < 0.5:
-                raise ValidationError("实际吃水导致水深不足")
-            changes["actual_draft_m"] = actual
-            summary = "船舶已靠泊"
-        elif action == "depart":
-            if not boolean(data, "cargo_operation_complete"):
-                raise ValidationError("货物作业尚未完成")
-            summary = "船舶已离泊"
-        elif action == "cancel":
-            changes["cancel_reason"] = text(data, "cancel_reason")
-            summary = "计划已取消"
-        p.update(changes)
-        return new_state, p, summary or ("已执行%s" % action)
+    def largest_gap(self, reefer: Dict[str, Any], views: List[Dict[str, Any]]) -> float:
+        """容量不足排队时记录的缺口：温控满足但容量不够的最优回路缺口；没有温控匹配的回路则记全部需求。"""
+        temp_ok_views = [v for v in views if v["state"] == "active" and self.temp_ok(reefer, v)]
+        if not temp_ok_views:
+            return round(reefer["required_kw"], 2)
+        richest = max(temp_ok_views, key=lambda v: v["free_kw"])
+        return round(max(reefer["required_kw"] - richest["free_kw"], 0.0), 2)
+
+    # ---------- 状态守卫 ----------
+    REEFER_TRANSITIONS = {
+        "waiting": {"connected", "queued", "pending_circuit", "cancelled"},
+        "connected": {"queued", "pending_circuit", "pending_recovery", "loaded", "cancelled"},
+        "queued": {"connected", "pending_circuit", "pending_recovery", "cancelled"},
+        "pending_circuit": {"connected", "queued", "pending_recovery", "cancelled"},
+        "pending_recovery": {"connected", "queued", "cancelled"},
+        "loaded": set(),
+        "cancelled": set(),
+    }
+
+    def require_reefer_state(self, reefer: Dict[str, Any], allowed: Iterable[str], hint: str) -> None:
+        if reefer["state"] not in set(allowed):
+            raise Conflict("冷藏箱当前状态%s，%s" % (reefer["state"], hint))
+
+    def require_circuit_state(self, circuit: Dict[str, Any], allowed: Iterable[str], hint: str) -> None:
+        if circuit["state"] not in set(allowed):
+            raise Conflict("回路当前状态%s，%s" % (circuit["state"], hint))
